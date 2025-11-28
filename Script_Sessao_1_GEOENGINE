@@ -1,0 +1,61 @@
+// Script 1, Sessão 1 - GeoEngine -2025
+
+// 1) IMPORTAR OS DADOS
+var roi = ee.Geometry.Point([37.5, -14.2]);  // - Definir área de interesse (roi)
+
+var s2 = ee.ImageCollection("COPERNICUS/S2_SR");  // - Carregar coleção Sentinel-2 SR
+
+
+// 2) PRÉ-PROCESSAR OS DADOS
+var s2_filtrada = s2
+  .filterBounds(roi) //    - Filtrar por área (filterBounds)
+  .filterDate("2024-01-01", "2025-01-31") //    - Filtrar por data (filterDate)
+  .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20));  // - Filtrar por percentagem de nuvem
+
+var s2_median = s2_filtrada.median(); //    - Criar uma imagem composta (median)
+
+
+// 3) PROCESSAR: CÁLCULO DO NDVI
+//    - Usar expressão (NIR - RED) / (NIR + RED)
+//    - Sentinel-2: NIR = B8 ; RED = B4
+
+//var ndvi = s2_median.expression(
+  //"(NIR - RED) / (NIR + RED)",
+  //{
+   // NIR: s2_median.select("B8"),
+   // RED: s2_median.select("B4")
+  //}
+//).rename("NDVI");
+
+// Função para calcular NDVI usando normalizedDifference()
+var calcularNDVI = function(img) {
+  // Aqui o Earth Engine faz essa conta automaticamente
+  return img.normalizedDifference(['B8', 'B4']).rename('NDVI');
+};
+
+// Aplicar a função à imagem composta
+var ndvi = calcularNDVI(s2_median);
+
+
+// 4) VISUALIZAR NO MAPA
+//    - Visualização RGB (B4, B3, B2)
+//    - Visualização NDVI com paleta simples
+
+Map.centerObject(roi, 10); // Centralizar o Objecto no mapa
+
+// PARAMETROS DE VISUALIZAÇÃO
+var visRGB = {
+  bands: ["B4", "B3", "B2"],
+  min: 0,
+  max: 3000
+};
+
+var visNDVI = {
+  min: -1,
+  max: 1,
+  palette: ["red", "yellow", "green"]
+};
+
+Map.addLayer(s2_median, visRGB, "Sentinel-2 RGB"); // Adicionar a camada do RGB ao Mapa
+Map.addLayer(ndvi, visNDVI, "NDVI"); // Adicionar a camada do NDVI ao Mapa
+
