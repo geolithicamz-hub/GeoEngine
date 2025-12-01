@@ -1,0 +1,230 @@
+
+// Parte 1 – SRTM: ELEVAÇÃO, HIPSOMETRIA, CLASSES TOPOGRÁFICAS, DECLIVIDADE
+
+// -------------------------- 2.0 PARÂMETROS GERAIS ---------------------------
+var SRTM_EXPORT_SCALE    = 30;
+var SRTM_EXPORT_TO_DRIVE = false;   // true -> exporta SRTM/derivados
+
+
+// -------------------------- 2.1 ÁREA DE ESTUDO (SRTM) ----------------------
+var adminLevel3_srtm = ee.FeatureCollection(
+  "projects/eengine-project/assets/distritos/gadm41_MOZ_3"
+);
+
+// Exemplo: província de Maputo (pode ajustar conforme quiser)
+var aoi_srtm = adminLevel3_srtm
+  .filter(ee.Filter.eq("NAME_1", "Maputo"))   // ou "Zambézia", "Sofala"...
+  .geometry();
+
+Map.centerObject(aoi_srtm, 7);
+
+
+// ---------------------- 2.2 DEM SRTM – ELEVAÇÃO ----------------------------
+var dem = ee.Image("USGS/SRTMGL1_003").clip(aoi_srtm);
+
+// DEM suavizado (para reduzir ruído)
+var demSmooth = dem.focal_mean(3, 'square', 'meters').rename('DEM');
+
+// Estatísticas min/max (para informação e normalização)
+var demStats = demSmooth.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: aoi_srtm,
+  scale: SRTM_EXPORT_SCALE,
+  bestEffort: true,
+  maxPixels: 1e9
+});
+
+var demMin = ee.Number(demStats.get('DEM_min'));
+var demMax = ee.Number(demStats.get('DEM_max'));
+
+print('DEM SRTM min/max (m):', demMin, demMax);
+
+// Visualização da Elevação (usar min/max fixos para evitar erro de ee.Number)
+var elevationVis = {
+  min: 0,
+  max: 3000,  // podes ajustar com base nos valores de demMin/demMax
+  palette: [
+    '003f5c','2f4b7c','465881','5a6a86','6f7b92',
+    '8c9aa6','b5c0c8','f7b267','f08a5d','e4572e','b71c1c'
+  ]
+};
+
+Map.addLayer(demSmooth, elevationVis, 'Elevação (DEM SRTM)', false);
+
+
+// ---------------------- 2.3 HIPSOMETRIA (NORMALIZAÇÃO 0–1) -----------------
+var demNorm = demSmooth
+  .subtract(demMin)
+  .divide(demMax.subtract(demMin))
+  .clamp(0, 1)
+  .rename('DEM_norm');
+
+// Paleta hipsométrica
+var hipPalette = [
+  '003f5c','2f4b7c','465881','5a6a86','6f7b92',
+  '8c9aa6','b5c0c8','f7b267','f08a5d','e4572e','b71c1c'
+];
+
+// Imagem hipsométrica visualizada
+var hips = demNorm.visualize({min: 0, max: 1, palette: hipPalette}).clip(aoi_srtm);
+Map.addLayer(hips, {}, 'Hipsometria (SRTM Normalizado)', false);
+
+
+// ---------------------- 2.4 RIOS E CLASSIFICAÇÃO TOPOGRÁFICA --------------
+var rivers = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers")
+  .filterBounds(aoi_srtm);
+
+// Raster dos rios (valor 1)
+var riversRaster = ee.Image()
+  .byte()
+  .paint(rivers, 1)
+  .clip(aoi_srtm)
+  .rename('water');
+
+Map.addLayer(riversRaster.selfMask(), {palette: ['3366ff']}, 'Rios (SRTM)', false);
+
+// Paleta de classes topográficas
+var paletteClass = ['d0f0ff','a0e060','ffff66','ffb366','ff6666','3366ff'];
+
+// Classificação topográfica
+var topoClass = demSmooth.expression(
+  "(water == 1) ? 6" +               // Classe 6: Água (Rios)
+  ": (DEM < 5) ? 1" +                // Classe 1: < 5 m
+  ": (DEM >= 5 && DEM < 10) ? 2" +   // Classe 2: 5–10 m
+  ": (DEM >= 10 && DEM < 30) ? 3" +  // Classe 3: 10–30 m
+  ": (DEM >= 30 && DEM < 60) ? 4" +  // Classe 4: 30–60 m
+  ": 5",                             // Classe 5: > 60 m
+  {
+    DEM: demSmooth,
+    water: riversRaster.unmask(0)
+  }
+).rename('topo_class').clip(aoi_srtm);
+
+Map.addLayer(
+  topoClass,
+  {min: 1, max: 6, palette: paletteClass},
+  'Topografia - Classes (SRTM)',
+  false
+);
+
+// Legenda topográfica
+var classNames = [
+  'Planície / < 5 m',              // Classe 1
+  'Planície Baixa / 5–10 m',       // Classe 2
+  'Planície Média / 10–30 m',      // Classe 3
+  'Colinas Baixas / 30–60 m',      // Classe 4
+  'Colinas Altas / > 60 m',        // Classe 5
+  'Água & Rios'                    // Classe 6
+];
+
+function addTopoLegend() {
+  var legend = ui.Panel({
+    style: {
+      position: 'bottom-left',
+      padding: '8px 15px',
+      backgroundColor: 'white'
+    }
+  });
+
+  legend.add(ui.Label({
+    value: 'Classificação Topográfica (m)',
+    style: {fontWeight: 'bold', fontSize: '14px', margin: '0 0 6px 0'}
+  }));
+
+  for (var i = 0; i < classNames.length; i++) {
+    var colorBox = ui.Label({
+      style: {
+        backgroundColor: paletteClass[i],
+        padding: '8px',
+        margin: '0 6px 4px 0',
+        border: '1px solid #000'
+      }
+    });
+    var desc = ui.Label({
+      value: classNames[i],
+      style: {margin: '0 0 4px 0'}
+    });
+    legend.add(ui.Panel({
+      widgets: [colorBox, desc],
+      layout: ui.Panel.Layout.Flow('horizontal')
+    }));
+  }
+
+  legend.add(ui.Label({
+    value: 'Fonte: SRTM & HydroSHEDS',
+    style: {fontSize: '10px', fontStyle: 'italic', margin: '6px 0 0 0'}
+  }));
+
+  Map.add(legend);
+}
+addTopoLegend();
+
+
+// ---------------------- 2.5 DECLIVIDADE (SLOPE) COM SRTM -------------------
+var slope = ee.Terrain.slope(dem);
+
+// Paleta de declividade
+var slopeVis = {
+  min: 0,
+  max: 45,
+  palette: [
+    '#313695', // 0–5  (Plano)
+    '#4575B4', // 5–10
+    '#AADDCC', // 10–20
+    '#FEE090', // 20–30
+    '#F46D43', // 30–45
+    '#D73027'  // >45
+  ]
+};
+
+Map.addLayer(slope, slopeVis, 'Declividade (°) - SRTM', true);
+
+
+// ---------------------- 2.6 EXPORTAÇÃO SRTM / DERIVADOS --------------------
+var regionGeom_srtm = aoi_srtm.bounds().buffer(1000);
+
+if (SRTM_EXPORT_TO_DRIVE) {
+  // DEM (Elevação)
+  Export.image.toDrive({
+    image: demSmooth.toFloat(),
+    description: 'AOI_DEM_SRTM',
+    folder: 'GEE_Exports',
+    fileNamePrefix: 'AOI_DEM_SRTM',
+    region: regionGeom_srtm,
+    scale: SRTM_EXPORT_SCALE,
+    maxPixels: 1e13
+  });
+
+  // Hipsometria (normalizada)
+  Export.image.toDrive({
+    image: demNorm.toFloat(),
+    description: 'AOI_Hipsometria_SRTM',
+    folder: 'GEE_Exports',
+    fileNamePrefix: 'AOI_Hipsometria_SRTM',
+    region: regionGeom_srtm,
+    scale: SRTM_EXPORT_SCALE,
+    maxPixels: 1e13
+  });
+
+  // Classificação topográfica
+  Export.image.toDrive({
+    image: topoClass.toInt(),
+    description: 'AOI_TopoClass_SRTM',
+    folder: 'GEE_Exports',
+    fileNamePrefix: 'AOI_TopoClass_SRTM',
+    region: regionGeom_srtm,
+    scale: SRTM_EXPORT_SCALE,
+    maxPixels: 1e13
+  });
+
+  // Declividade
+  Export.image.toDrive({
+    image: slope.toFloat(),
+    description: 'AOI_Declividade_SRTM',
+    folder: 'GEE_Exports',
+    fileNamePrefix: 'AOI_Declividade_SRTM',
+    region: regionGeom_srtm,
+    scale: SRTM_EXPORT_SCALE,
+    maxPixels: 1e13
+  });
+}
